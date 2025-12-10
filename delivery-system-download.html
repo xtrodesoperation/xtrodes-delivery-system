@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מערכת ניהול Delivery - XTrodes</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-slate-50 to-blue-50 min-h-screen">
+    <div id="app"></div>
+    <script>
+        const StorageManager = {
+            save(key, data) { localStorage.setItem(key, JSON.stringify(data)); },
+            load(key) { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; }
+        };
+
+        const INITIAL_INVENTORY = [
+            { sku: 'XTELC0003405RM', description: 'gEMG', uom: 'Each/Bag', stock: 15, minStock: 10 },
+            { sku: 'XTELC0004005RM', description: 'Facial EMG - Right side', uom: 'Each/Bag', stock: 8, minStock: 10 },
+            { sku: 'XTELC0002005RM', description: 'Demo', uom: 'Each/Bag', stock: 100, minStock: 10 },
+            { sku: 'XTELC046GM05', description: 'Frontal EEG', uom: 'Each/Bag', stock: 5, minStock: 10 },
+            { sku: 'XTELC047RM05', description: 'Sleep2Eyes', uom: 'Each/Bag', stock: 22, minStock: 10 },
+            { sku: 'XTELC048GM05', description: 'Posterior EEG', uom: 'Each/Bag', stock: 12, minStock: 10 },
+            { sku: 'XTELC066GM05', description: 'EMG8 slp (1.5)', uom: 'Each/Bag', stock: 3, minStock: 10 },
+            { sku: 'XTELC067GM05', description: 'EXG7 slp (1.5) - Face', uom: 'Each/Bag', stock: 18, minStock: 10 },
+            { sku: 'XTELC068GM05', description: 'ECG slp (1.5)', uom: 'Each/Bag', stock: 25, minStock: 10 }
+        ];
+
+        class AppState {
+            constructor() {
+                this.inventory = StorageManager.load('inventory') || INITIAL_INVENTORY;
+                this.requests = StorageManager.load('requests') || [];
+                this.notifications = StorageManager.load('notifications') || [];
+                this.view = 'form';
+                this.selectedItems = {};
+                this.requestType = 'external';
+                this.requesterName = '';
+                this.deliveryMethod = '';
+                this.showNotifications = false;
+            }
+            save() {
+                StorageManager.save('inventory', this.inventory);
+                StorageManager.save('requests', this.requests);
+                StorageManager.save('notifications', this.notifications);
+            }
+            addNotification(type, title, message) {
+                this.notifications.unshift({
+                    id: Date.now(), type, title, message,
+                    timestamp: new Date().toLocaleString('he-IL'), read: false
+                });
+                this.save();
+            }
+            getStockStatus(item) {
+                if (item.stock === 0) return 'out';
+                if (item.stock < item.minStock) return 'low';
+                return 'good';
+            }
+            validateRequest() {
+                const warnings = [];
+                Object.entries(this.selectedItems).forEach(([sku, quantity]) => {
+                    const item = this.inventory.find(i => i.sku === sku);
+                    if (!item) return;
+                    const status = this.getStockStatus(item);
+                    if (status === 'out') warnings.push({ type: 'error', description: item.description, message: 'המוצר אזל' });
+                    else if (status === 'low' && this.requestType === 'internal') 
+                        warnings.push({ type: 'warning', description: item.description, message: `מלאי נמוך (${item.stock} יח')` });
+                    else if (status === 'low' && this.requestType === 'external') 
+                        warnings.push({ type: 'info', description: item.description, message: `מלאי נמוך - מאושר ללקוח` });
+                    if (quantity > item.stock) 
+                        warnings.push({ type: 'error', description: item.description, message: `מבקש ${quantity} יש ${item.stock}` });
+                });
+                return warnings;
+            }
+            createRequest() {
+                const warnings = this.validateRequest();
+                if (warnings.some(w => w.type === 'error')) { alert('יש שגיאות בבקשה'); return false; }
+                if (warnings.some(w => w.type === 'warning') && !confirm('יש אזהרות מלאי נמוך. להמשיך?')) return false;
+
+                const req = {
+                    id: Date.now(),
+                    date: new Date().toLocaleDateString('he-IL'),
+                    time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+                    requester: this.requesterName,
+                    type: this.requestType,
+                    items: Object.entries(this.selectedItems).map(([sku, qty]) => {
+                        const item = this.inventory.find(i => i.sku === sku);
+                        return { ...item, requestedQty: qty };
+                    }),
+                    deliveryMethod: this.deliveryMethod
+                };
+
+                this.requests.push(req);
+                this.inventory = this.inventory.map(item => {
+                    if (this.selectedItems[item.sku]) {
+                        const newStock = item.stock - this.selectedItems[item.sku];
+                        if (newStock < item.minStock && item.stock >= item.minStock)
+                            this.addNotification('warning', 'מלאי נמוך!', `${item.description} (${newStock} יחידות)`);
+                        if (newStock === 0)
+                            this.addNotification('critical', 'אזל מהמלאי!', `${item.description} אזל לגמרי`);
+                        return { ...item, stock: newStock };
+                    }
+                    return item;
+                });
+
+                this.addNotification('success', 'בקשה נוצרה', `${this.requesterName} ביקש פריטים`);
+                this.selectedItems = {}; 
+                this.requesterName = ''; 
+                this.deliveryMethod = '';
+                this.save();
+                alert('✅ Delivery Form נוצר בהצלחה!');
+                return true;
+            }
+        }
+
+        const state = new AppState();
+
+        function render() {
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-7xl mx-auto p-6">
+                    ${renderHeader()}
+                    ${state.view === 'form' ? renderForm() : renderDashboard()}
+                </div>
+            `;
+            attachListeners();
+        }
+
+        function renderHeader() {
+            const unread = state.notifications.filter(n => !n.read).length;
+            return `
+                <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h1 class="text-3xl font-bold text-gray-800">📦 מערכת ניהול Delivery</h1>
+                            <p class="text-gray-600 mt-1">XTrodes Medical Systems</p>
+                        </div>
+                        <div class="flex gap-3 items-center">
+                            <button onclick="toggleNotif()" class="relative p-3 bg-gray-100 hover:bg-gray-200 rounded-lg transition">
+                                🔔
+                                ${unread > 0 ? `<span class="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">${unread}</span>` : ''}
+                            </button>
+                            <button onclick="setView('form')" class="px-6 py-3 rounded-lg font-semibold transition ${state.view === 'form' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}">
+                                טופס בקשה
+                            </button>
+                            <button onclick="setView('dashboard')" class="px-6 py-3 rounded-lg font-semibold transition ${state.view === 'dashboard' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}">
+                                📊 Dashboard
+                            </button>
+                        </div>
+                    </div>
+                    ${state.showNotifications ? renderNotifPanel() : ''}
+                </div>
+            `;
+        }
+
+        function renderNotifPanel() {
+            if (state.notifications.length === 0) {
+                return `<div class="mt-4 bg-gray-50 rounded-lg p-8 text-center text-gray-400">אין התראות</div>`;
+            }
+            return `
+                <div class="mt-4 bg-white border-2 rounded-lg max-h-96 overflow-auto">
+                    ${state.notifications.map(n => `
+                        <div onclick="markRead(${n.id})" class="p-4 border-b hover:bg-gray-50 cursor-pointer ${!n.read ? 'bg-blue-50' : ''}">
+                            <div class="font-semibold text-sm">${n.type === 'critical' ? '🔴' : n.type === 'warning' ? '🟡' : '🟢'} ${n.title}</div>
+                            <div class="text-xs text-gray-600 mt-1">${n.message}</div>
+                            <div class="text-xs text-gray-400 mt-1">${n.timestamp}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function renderForm() {
+            const warnings = state.validateRequest();
+            const count = Object.keys(state.selectedItems).length;
+            const total = Object.values(state.selectedItems).reduce((a, b) => a + b, 0);
+
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="space-y-6">
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <h2 class="text-xl font-bold text-gray-800 mb-4">פרטי הבקשה</h2>
+                            <div class="space-y-4">
+                                <input type="text" id="requesterName" value="${state.requesterName}" placeholder="שם מבקש" 
+                                       class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-500 outline-none">
+                                
+                                <label class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer hover:bg-blue-50">
+                                    <input type="radio" name="type" value="external" ${state.requestType === 'external' ? 'checked' : ''} class="w-5 h-5">
+                                    <div>
+                                        <div class="font-semibold text-gray-800">לקוח חיצוני</div>
+                                        <div class="text-xs text-gray-500">עדיפות גבוהה במלאי נמוך</div>
+                                    </div>
+                                </label>
+                                
+                                <label class="flex items-center gap-3 p-3 border-2 rounded-lg cursor-pointer hover:bg-gray-50">
+                                    <input type="radio" name="type" value="internal" ${state.requestType === 'internal' ? 'checked' : ''} class="w-5 h-5">
+                                    <div>
+                                        <div class="font-semibold text-gray-800">שימוש פנימי</div>
+                                        <div class="text-xs text-gray-500">כנס / ניסוי / דמו</div>
+                                    </div>
+                                </label>
+                                
+                                <input type="text" id="deliveryMethod" value="${state.deliveryMethod}" placeholder="אופן משלוח" 
+                                       class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-500 outline-none">
+                            </div>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl shadow-lg p-6 text-white">
+                            <h3 class="text-lg font-bold mb-4">סיכום הבקשה</h3>
+                            <div class="space-y-2 mb-6">
+                                <div class="flex justify-between">
+                                    <span>פריטים שונים:</span>
+                                    <span class="font-bold text-xl">${count}</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span>סה"כ יחידות:</span>
+                                    <span class="font-bold text-xl">${total}</span>
+                                </div>
+                            </div>
+                            <button onclick="createReq()" ${count === 0 || !state.requesterName ? 'disabled' : ''}
+                                    class="w-full bg-white text-blue-600 font-bold py-3 rounded-lg hover:bg-blue-50 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                📄 צור Delivery Form
+                            </button>
+                        </div>
+
+                        ${warnings.length > 0 ? warnings.map(w => `
+                            <div class="p-4 rounded-lg border-2 ${w.type === 'error' ? 'bg-red-50 border-red-300' : w.type === 'warning' ? 'bg-yellow-50 border-yellow-300' : 'bg-blue-50 border-blue-300'}">
+                                <div class="font-semibold text-sm">${w.description}</div>
+                                <div class="text-xs mt-1">${w.message}</div>
+                            </div>
+                        `).join('') : ''}
+                    </div>
+
+                    <div class="lg:col-span-2">
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <h2 class="text-xl font-bold text-gray-800 mb-4">בחר מדבקות</h2>
+                            <div class="space-y-3">
+                                ${state.inventory.map(item => {
+                                    const st = state.getStockStatus(item);
+                                    const sel = state.selectedItems[item.sku] || 0;
+                                    return `
+                                        <div class="p-4 rounded-lg border-2 transition ${st === 'out' ? 'border-red-300 bg-red-50 opacity-60' : st === 'low' ? 'border-yellow-300 bg-yellow-50' : sel > 0 ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}">
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex-1">
+                                                    <div class="flex items-center gap-3 mb-2">
+                                                        <h3 class="font-bold text-gray-800">${item.description}</h3>
+                                                        ${st === 'out' ? '<span class="px-3 py-1 bg-red-600 text-white text-xs font-bold rounded-full">אזל</span>' : ''}
+                                                        ${st === 'low' ? '<span class="px-3 py-1 bg-yellow-500 text-white text-xs font-bold rounded-full">מלאי נמוך</span>' : ''}
+                                                    </div>
+                                                    <div class="flex items-center gap-4 text-sm text-gray-600">
+                                                        <span>SKU: ${item.sku}</span>
+                                                        <span>•</span>
+                                                        <span>במלאי: <strong>${item.stock}</strong> ${item.uom}</span>
+                                                    </div>
+                                                </div>
+                                                <input type="number" min="0" max="${item.stock}" value="${sel || ''}" 
+                                                       data-sku="${item.sku}" ${st === 'out' ? 'disabled' : ''}
+                                                       class="qty w-20 px-3 py-2 border-2 border-gray-300 rounded-lg text-center font-semibold focus:border-blue-500 outline-none disabled:opacity-50"
+                                                       placeholder="0">
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDashboard() {
+            const low = state.inventory.filter(i => state.getStockStatus(i) === 'low');
+            const out = state.inventory.filter(i => state.getStockStatus(i) === 'out');
+
+            return `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <div class="text-sm text-gray-600">סה"כ מוצרים</div>
+                            <div class="text-3xl font-bold text-gray-800">${state.inventory.length}</div>
+                        </div>
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <div class="text-sm text-gray-600">מלאי נמוך</div>
+                            <div class="text-3xl font-bold text-yellow-600">${low.length}</div>
+                        </div>
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <div class="text-sm text-gray-600">אזל מהמלאי</div>
+                            <div class="text-3xl font-bold text-red-600">${out.length}</div>
+                        </div>
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <div class="text-sm text-gray-600">בקשות</div>
+                            <div class="text-3xl font-bold text-green-600">${state.requests.length}</div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-gray-800">בקשות אחרונות</h2>
+                            <button onclick="exportReport()" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold transition">
+                                📥 דוח שבועי
+                            </button>
+                        </div>
+
+                        ${state.requests.length === 0 ? `
+                            <div class="text-center py-12 text-gray-400">
+                                <div class="text-5xl mb-4">🕐</div>
+                                <p>אין בקשות עדיין</p>
+                            </div>
+                        ` : `
+                            <div class="space-y-3">
+                                ${state.requests.slice().reverse().map(r => `
+                                    <div class="border-2 border-gray-200 rounded-lg p-4 hover:border-blue-300 transition">
+                                        <div class="flex justify-between items-start mb-3">
+                                            <div>
+                                                <div class="font-semibold text-gray-800">${r.requester}</div>
+                                                <div class="text-sm text-gray-500">${r.date} ${r.time}</div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <span class="px-3 py-1 rounded-full text-xs font-bold ${r.type === 'external' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}">
+                                                    ${r.type === 'external' ? 'לקוח חיצוני' : 'שימוש פנימי'}
+                                                </span>
+                                                <button onclick="downloadPDF(${r.id})" class="p-2 hover:bg-blue-50 rounded-lg transition text-xl">
+                                                    📥
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="bg-gray-50 rounded-lg p-3">
+                                            <div class="text-sm text-gray-600 mb-2">פריטים:</div>
+                                            ${r.items.map(i => `
+                                                <div class="text-sm flex justify-between">
+                                                    <span>${i.description}</span>
+                                                    <span class="font-semibold">x${i.requestedQty}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+
+                    ${low.length > 0 ? `
+                        <div class="bg-yellow-50 border-2 border-yellow-300 rounded-xl p-6">
+                            <h3 class="font-bold text-yellow-900 mb-3 flex items-center gap-2">
+                                ⚠️ התראת מלאי נמוך
+                            </h3>
+                            <div class="space-y-1">
+                                ${low.map(item => `
+                                    <div class="text-sm text-yellow-800">
+                                        • ${item.description} - נותרו רק ${item.stock} יחידות
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function attachListeners() {
+            document.querySelectorAll('.qty').forEach(inp => {
+                inp.addEventListener('change', e => {
+                    const sku = e.target.dataset.sku;
+                    const qty = parseInt(e.target.value) || 0;
+                    if (qty === 0) delete state.selectedItems[sku];
+                    else state.selectedItems[sku] = qty;
+                    render();
+                });
+            });
+            
+            document.querySelectorAll('input[name="type"]').forEach(r => {
+                r.addEventListener('change', e => {
+                    state.requestType = e.target.value;
+                    render();
+                });
+            });
+            
+            const reqName = document.getElementById('requesterName');
+            if (reqName) reqName.addEventListener('input', e => state.requesterName = e.target.value);
+            
+            const delMethod = document.getElementById('deliveryMethod');
+            if (delMethod) delMethod.addEventListener('input', e => state.deliveryMethod = e.target.value);
+        }
+
+        function setView(v) { state.view = v; render(); }
+        function toggleNotif() { state.showNotifications = !state.showNotifications; render(); }
+        function markRead(id) {
+            const n = state.notifications.find(n => n.id === id);
+            if (n) n.read = true;
+            state.save();
+            render();
+        }
+        function createReq() { if (state.createRequest()) render(); }
+        
+        function downloadPDF(id) {
+            const r = state.requests.find(req => req.id === id);
+            if (!r) return;
+            
+            let txt = '========================================\n';
+            txt += '         DELIVERY FORM\n';
+            txt += '    XTrodes Medical Systems\n';
+            txt += '========================================\n\n';
+            txt += `תאריך: ${r.date} ${r.time}\n`;
+            txt += `מבקש: ${r.requester}\n`;
+            txt += `סוג: ${r.type === 'external' ? 'לקוח חיצוני' : 'שימוש פנימי'}\n\n`;
+            txt += 'פריטים:\n';
+            txt += '----------------------------------------\n';
+            
+            r.items.forEach((it, i) => {
+                txt += `${i+1}. ${it.description}\n`;
+                txt += `   SKU: ${it.sku}\n`;
+                txt += `   כמות: ${it.requestedQty} ${it.uom}\n\n`;
+            });
+            
+            txt += '----------------------------------------\n\n';
+            txt += `אופן משלוח: ${r.deliveryMethod}\n\n`;
+            txt += 'ארוז ע"י: ________________  תאריך: __________\n\n';
+            txt += 'נמסר ע"י: ________________\n\n';
+            txt += 'מקבל: ________________  חתימה: ________________\n';
+            
+            const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `delivery_${r.requester}_${r.date.replace(/\//g, '-')}.txt`;
+            link.click();
+        }
+        
+        function exportReport() {
+            const low = state.inventory.filter(i => state.getStockStatus(i) === 'low');
+            const out = state.inventory.filter(i => state.getStockStatus(i) === 'out');
+            
+            let txt = 'דוח שבועי - מערכת ניהול מלאי\n';
+            txt += `תאריך: ${new Date().toLocaleString('he-IL')}\n\n`;
+            txt += '=== סטטיסטיקות מלאי ===\n';
+            txt += `סה"כ מוצרים: ${state.inventory.length}\n`;
+            txt += `מלאי נמוך: ${low.length}\n`;
+            txt += `אזל מהמלאי: ${out.length}\n`;
+            txt += `סה"כ בקשות: ${state.requests.length}\n\n`;
+            
+            if (low.length > 0) {
+                txt += '=== פריטים עם מלאי נמוך ===\n';
+                low.forEach(item => txt += `- ${item.description} (${item.sku}): ${item.stock} יחידות\n`);
+                txt += '\n';
+            }
+            
+            if (out.length > 0) {
+                txt += '=== פריטים שאזלו ===\n';
+                out.forEach(item => txt += `- ${item.description} (${item.sku})\n`);
+                txt += '\n';
+            }
+            
+            const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `weekly_report_${new Date().toISOString().split('T')[0]}.txt`;
+            link.click();
+        }
+
+        render();
+    </script>
+</body>
+</html>
